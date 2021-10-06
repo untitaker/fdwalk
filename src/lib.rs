@@ -1,11 +1,12 @@
 use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::OFlag;
+use nix::fcntl::{openat, OFlag};
 use nix::sys::stat::Mode;
 use std::ffi::{CStr, OsStr, OsString};
+use std::fs::File;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -33,7 +34,7 @@ impl PathNode {
 pub trait Node {
     fn root(segment: &OsStr) -> Self;
     fn segment(&self) -> &OsStr;
-    fn new_child(&self, segment: &OsStr) -> Self;
+    fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self;
 }
 
 impl Node for PathNode {
@@ -48,7 +49,7 @@ impl Node for PathNode {
         &self.0.segment
     }
 
-    fn new_child(&self, segment: &OsStr) -> PathNode {
+    fn new_child(&self, _parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
         PathNode(Arc::new(PathNodeInner {
             parent: Some(self.clone()),
             segment: segment.to_owned(),
@@ -56,17 +57,42 @@ impl Node for PathNode {
     }
 }
 
-pub struct SegmentNode(OsString);
+pub struct FileNode {
+    parent_dir: Option<Arc<Dir>>,
+    segment: OsString,
+}
 
-impl Node for SegmentNode {
+impl FileNode {
+    pub fn open(&self) -> Option<Result<File, Errno>> {
+        self.open_options(OFlag::empty(), Mode::empty())
+    }
+
+    pub fn open_options(&self, oflag: OFlag, mode: Mode) -> Option<Result<File, Errno>> {
+        let fd = openat(
+            self.parent_dir.as_ref()?.as_raw_fd(),
+            self.segment.as_os_str(),
+            oflag,
+            mode,
+        );
+        Some(fd.map(|x| unsafe { File::from_raw_fd(x) }))
+    }
+}
+
+impl Node for FileNode {
     fn root(segment: &OsStr) -> Self {
-        SegmentNode(segment.to_owned())
+        FileNode {
+            parent_dir: None,
+            segment: segment.to_owned(),
+        }
     }
     fn segment(&self) -> &OsStr {
-        &self.0
+        &self.segment
     }
-    fn new_child(&self, segment: &OsStr) -> Self {
-        SegmentNode(segment.to_owned())
+    fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
+        FileNode {
+            parent_dir: Some(parent_dir.clone()),
+            segment: segment.to_owned(),
+        }
     }
 }
 
@@ -107,7 +133,7 @@ pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> impl Iterator<Item = N> {
                 continue;
             }
 
-            let child = node.new_child(OsStr::from_bytes(fname.to_bytes()));
+            let child = node.new_child(&dir, OsStr::from_bytes(fname.to_bytes()));
             walk_stack.push((child, Some(Arc::clone(&dir))));
         }
 
