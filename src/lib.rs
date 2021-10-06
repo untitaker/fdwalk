@@ -40,7 +40,7 @@ impl Node for PathNode {
     fn root(segment: &OsStr) -> PathNode {
         PathNode(Arc::new(PathNodeInner {
             parent: None,
-            segment: segment.to_owned()
+            segment: segment.to_owned(),
         }))
     }
 
@@ -51,7 +51,7 @@ impl Node for PathNode {
     fn new_child(&self, segment: &OsStr) -> PathNode {
         PathNode(Arc::new(PathNodeInner {
             parent: Some(self.clone()),
-            segment: segment.to_owned()
+            segment: segment.to_owned(),
         }))
     }
 }
@@ -59,17 +59,20 @@ impl Node for PathNode {
 pub struct SegmentNode(OsString);
 
 impl Node for SegmentNode {
-    fn root(segment: &OsStr) -> Self { SegmentNode(segment.to_owned()) }
-    fn segment(&self) -> &OsStr { &self.0 }
-    fn new_child(&self, segment: &OsStr) -> Self { SegmentNode(segment.to_owned()) }
+    fn root(segment: &OsStr) -> Self {
+        SegmentNode(segment.to_owned())
+    }
+    fn segment(&self) -> &OsStr {
+        &self.0
+    }
+    fn new_child(&self, segment: &OsStr) -> Self {
+        SegmentNode(segment.to_owned())
+    }
 }
 
 pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> impl Iterator<Item = N> {
     let mut entries = Vec::new();
-    let mut walk_stack = vec![(
-        N::root(path.as_ref().as_os_str()),
-        None::<Arc<Dir>>,
-    )];
+    let mut walk_stack = vec![(N::root(path.as_ref().as_os_str()), None::<Arc<Dir>>)];
 
     while let Some((node, parent_dir)) = walk_stack.pop() {
         let dir = if let Some(parent_dir) = parent_dir {
