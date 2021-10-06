@@ -1,0 +1,12 @@
+[package]
+name = "fdwalk"
+description = "Memory-efficient directory-walking"
+repository = "https://github.com/untitaker/fdwalk"
+version = "0.1.0"
+authors = ["Markus Unterwaditzer <markus-honeypot@unterwaditzer.net>"]
+edition = "2018"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+nix = "0.23.0"
