@@ -4,7 +4,7 @@ use nix::fcntl::{openat, OFlag};
 use nix::sys::stat::Mode;
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::File;
-use std::mem;
+use std::mem::ManuallyDrop;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
@@ -96,50 +96,65 @@ impl Node for FileNode {
     }
 }
 
-pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> impl Iterator<Item = N> {
-    let mut entries = Vec::new();
-    let mut walk_stack = vec![(N::root(path.as_ref().as_os_str()), None::<Arc<Dir>>)];
+pub struct Walk<N> {
+    open_dir: Option<(N, Arc<Dir>, ManuallyDrop<nix::dir::OwningIter>)>,
+    walk_stack: Vec<(N, Option<Arc<Dir>>)>,
+}
 
-    while let Some((node, parent_dir)) = walk_stack.pop() {
-        let dir = if let Some(parent_dir) = parent_dir {
-            Dir::openat(
-                parent_dir.as_raw_fd(),
-                node.segment(),
-                OFlag::empty(),
-                Mode::empty(),
-            )
-        } else {
-            Dir::open(node.segment(), OFlag::empty(), Mode::empty())
-        };
+impl<N: Node> Iterator for Walk<N> {
+    type Item = N;
 
-        let dir = match dir {
-            Ok(x) => Arc::new(x),
-            Err(Errno::ENOTDIR) => {
-                entries.push(node);
-                continue;
-            }
-            Err(Errno::ENOENT) => continue,
-            Err(e) => panic!("failed to open {:?}: {}", node.segment(), e),
-        };
+    fn next(&mut self) -> Option<N> {
+        loop {
+            if let Some((ref open_node, ref open_dir, ref mut open_dir_iter)) = self.open_dir {
+                if let Some(entry) = open_dir_iter.next() {
+                    let entry = entry.unwrap();
+                    let fname = entry.file_name();
+                    if fname == unsafe { CStr::from_bytes_with_nul_unchecked(b".\0") }
+                        || fname == unsafe { CStr::from_bytes_with_nul_unchecked(b"..\0") }
+                    {
+                        continue;
+                    }
 
-        let mut dir2 = Dir::from_fd(dir.as_raw_fd()).unwrap();
-
-        for entry in dir2.iter() {
-            let entry = entry.unwrap();
-            let fname = entry.file_name();
-            if fname == unsafe { CStr::from_bytes_with_nul_unchecked(b".\0") }
-                || fname == unsafe { CStr::from_bytes_with_nul_unchecked(b"..\0") }
-            {
-                continue;
+                    let child = open_node.new_child(&open_dir, OsStr::from_bytes(fname.to_bytes()));
+                    self.walk_stack.push((child, Some(Arc::clone(&open_dir))));
+                } else {
+                    self.open_dir = None;
+                }
             }
 
-            let child = node.new_child(&dir, OsStr::from_bytes(fname.to_bytes()));
-            walk_stack.push((child, Some(Arc::clone(&dir))));
+            let (node, parent_dir) = self.walk_stack.pop()?;
+
+            let dir = if let Some(parent_dir) = parent_dir {
+                Dir::openat(
+                    parent_dir.as_raw_fd(),
+                    node.segment(),
+                    OFlag::empty(),
+                    Mode::empty(),
+                )
+            } else {
+                Dir::open(node.segment(), OFlag::empty(), Mode::empty())
+            };
+
+            let dir = match dir {
+                Ok(x) => Arc::new(x),
+                Err(Errno::ENOTDIR) => {
+                    return Some(node);
+                }
+                Err(Errno::ENOENT) => continue,
+                Err(e) => panic!("failed to open {:?}: {}", node.segment(), e),
+            };
+
+            let dir_iter = ManuallyDrop::new(Dir::from_fd(dir.as_raw_fd()).unwrap().into_iter());
+
+            self.open_dir = Some((node, dir, dir_iter));
         }
-
-        // don't close fd yet -- that is done when `dir` is dropped.
-        mem::forget(dir2);
     }
+}
 
-    entries.into_iter()
+pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> Walk<N> {
+    Walk {
+        open_dir: None,
+        walk_stack: vec![(N::root(path.as_ref().as_os_str()), None::<Arc<Dir>>)],
+    }
 }
