@@ -43,16 +43,16 @@ impl DirSink for WithoutOpen {
 }
 
 pub trait PathSink: Sized {
-    fn path_sink(base: &Self, segment: &OsStr) -> Self;
+    fn path_sink(base: Option<&Self>, segment: &OsStr) -> Self;
 }
 
 #[derive(Debug, Clone)]
 pub struct WithPath(Arc<PathNodeInner>);
 
 impl PathSink for WithPath {
-    fn path_sink(base: &Self, segment: &OsStr) -> Self {
+    fn path_sink(base: Option<&Self>, segment: &OsStr) -> Self {
         WithPath(Arc::new(PathNodeInner {
-            parent: Some(base.clone()),
+            parent: base.map(|x| x.clone()),
             segment: segment.to_owned(),
         }))
     }
@@ -61,7 +61,7 @@ impl PathSink for WithPath {
 pub struct WithoutPath;
 
 impl PathSink for WithoutPath {
-    fn path_sink(_base: &Self, _segment: &OsStr) -> Self {
+    fn path_sink(_base: Option<&Self>, _segment: &OsStr) -> Self {
         WithoutPath
     }
 }
@@ -77,7 +77,7 @@ impl<P: PathSink> FileNode<WithOpen, P> {
         fstatat(
             self.parent_dir.as_ref().unwrap().0.as_raw_fd(),
             self.segment.as_os_str(),
-            AtFlags::empty(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
         )
     }
 
@@ -98,8 +98,8 @@ impl<P: PathSink> FileNode<WithOpen, P> {
 
 impl<D: DirSink> FileNode<D, WithPath> {
     pub fn to_path(&self) -> PathBuf {
-        // XXX: slow
-        let mut segments = vec![&self.segment];
+        // XXX: slow, also self.segment apparently == self.parent_node.segment?
+        let mut segments = vec![];
 
         let mut current_opt: Option<&WithPath> = self.parent_node.as_ref();
 
@@ -132,7 +132,7 @@ impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
         FileNode {
             parent_dir: Some(D::dir_sink(parent_dir.clone())),
-            parent_node: self.parent_node.as_ref().map(|p| P::path_sink(p, segment)),
+            parent_node: Some(P::path_sink(self.parent_node.as_ref(), segment)),
             segment: segment.to_owned(),
         }
     }

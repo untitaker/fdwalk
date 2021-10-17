@@ -1,3 +1,4 @@
+// supposed to be equivalent to rg --files -uuu
 use fdwalk::FileNode;
 use nix::sys::stat::SFlag;
 
@@ -7,8 +8,7 @@ fn main() {
         let stat = node.stat().unwrap();
 
         // skip symlinks
-        if unsafe { SFlag::from_bits_unchecked(stat.st_mode & SFlag::S_IFMT.bits()) }
-            == SFlag::S_IFLNK
+        if unsafe { SFlag::from_bits_unchecked(stat.st_mode & SFlag::S_IFMT.bits()) } != SFlag::S_IFREG
         {
             continue;
         }
