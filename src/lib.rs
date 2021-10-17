@@ -214,11 +214,12 @@ impl<N: Node> Iterator for Walk<N> {
 
             let dir = match dir {
                 Ok(x) => Arc::new(x),
-                // must be a regular file or symlink
-                Err(Errno::ENOTDIR) | Err(Errno::ELOOP) => {
+                Err(Errno::ENOTDIR) => {
                     return Some(Ok(node));
                 }
                 Err(Errno::ENOENT) => continue,
+                // emitted when follow_symlinks = false and we have a symlink
+                Err(Errno::ELOOP) => continue,
                 Err(e) => return Some(Err(e)),
             };
 
