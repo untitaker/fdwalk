@@ -196,9 +196,9 @@ impl<N: Node> Iterator for Walk<N> {
             let (node, parent_dir) = self.walk_stack.pop()?;
 
             let oflags = if self.follow_symlinks {
-                OFlag::O_NOFOLLOW
-            } else {
                 OFlag::empty()
+            } else {
+                OFlag::O_NOFOLLOW
             };
 
             let dir = if let Some(parent_dir) = parent_dir {
