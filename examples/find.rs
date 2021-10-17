@@ -8,7 +8,8 @@ fn main() {
         let stat = node.stat().unwrap();
 
         // skip symlinks
-        if unsafe { SFlag::from_bits_unchecked(stat.st_mode & SFlag::S_IFMT.bits()) } != SFlag::S_IFREG
+        if unsafe { SFlag::from_bits_unchecked(stat.st_mode & SFlag::S_IFMT.bits()) }
+            != SFlag::S_IFREG
         {
             continue;
         }
