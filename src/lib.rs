@@ -127,7 +127,8 @@ impl<N: Node> Iterator for Walk<N> {
                 Err(e) => return Some(Err(e)),
             };
 
-            let mut dir_iter = ManuallyDrop::new(Dir::from_fd(dir.as_raw_fd()).unwrap().into_iter());
+            let mut dir_iter =
+                ManuallyDrop::new(Dir::from_fd(dir.as_raw_fd()).unwrap().into_iter());
 
             for entry in &mut *dir_iter {
                 let entry = match entry {
