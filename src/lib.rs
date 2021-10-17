@@ -66,7 +66,7 @@ impl PathSink for WithoutPath {
     }
 }
 
-pub struct FileNode<D = WithOpen, P = WithPath> {
+pub struct FileNode<D = WithoutOpen, P = WithoutPath> {
     parent_node: Option<P>,
     parent_dir: Option<D>,
     segment: OsString,
@@ -138,8 +138,54 @@ impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
     }
 }
 
-pub struct Walk<N = FileNode> {
+pub struct Walk<N: Node = FileNode> {
+    path: OsString,
+    follow_symlinks: bool,
     walk_stack: Vec<(N, Option<Arc<Dir>>)>,
+}
+
+impl<N: Node> Walk<N> {
+    fn new(path: OsString, follow_symlinks: bool) -> Self {
+        let walk_stack = vec![(N::root(&path), None)];
+
+        Walk {
+            path,
+            follow_symlinks,
+            walk_stack,
+        }
+    }
+
+    pub fn with_node<N2: Node>(self) -> Walk<N2> {
+        Walk::new(self.path, self.follow_symlinks)
+    }
+
+    pub fn follow_symlinks(mut self) -> Self {
+        self.follow_symlinks = true;
+        self
+    }
+
+    pub fn no_follow_symlinks(mut self) -> Self {
+        self.follow_symlinks = false;
+        self
+    }
+}
+
+impl<D: DirSink, P: PathSink> Walk<FileNode<D, P>> {
+    pub fn with_paths(self) -> Walk<FileNode<D, WithPath>> {
+        self.with_node()
+    }
+
+    pub fn without_paths(self) -> Walk<FileNode<D, WithoutPath>> {
+        self.with_node()
+    }
+
+    pub fn with_open(self) -> Walk<FileNode<WithOpen, P>> {
+        self.with_node()
+    }
+
+    pub fn without_open(self) -> Walk<FileNode<WithoutOpen, P>> {
+        self.with_node()
+    }
 }
 
 impl<N: Node> Iterator for Walk<N> {
@@ -149,24 +195,30 @@ impl<N: Node> Iterator for Walk<N> {
         loop {
             let (node, parent_dir) = self.walk_stack.pop()?;
 
+            let oflags = if self.follow_symlinks {
+                OFlag::O_NOFOLLOW
+            } else {
+                OFlag::empty()
+            };
+
             let dir = if let Some(parent_dir) = parent_dir {
                 Dir::openat(
                     parent_dir.as_raw_fd(),
                     node.segment(),
-                    OFlag::O_NOFOLLOW,
+                    oflags,
                     Mode::empty(),
                 )
             } else {
-                Dir::open(node.segment(), OFlag::O_NOFOLLOW, Mode::empty())
+                Dir::open(node.segment(), oflags, Mode::empty())
             };
 
             let dir = match dir {
                 Ok(x) => Arc::new(x),
-                Err(Errno::ENOTDIR) => {
+                // must be a regular file or symlink
+                Err(Errno::ENOTDIR) | Err(Errno::ELOOP) => {
                     return Some(Ok(node));
                 }
                 Err(Errno::ENOENT) => continue,
-                Err(Errno::ELOOP) => continue,
                 Err(e) => return Some(Err(e)),
             };
 
@@ -192,8 +244,6 @@ impl<N: Node> Iterator for Walk<N> {
     }
 }
 
-pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> Walk<N> {
-    Walk {
-        walk_stack: vec![(N::root(path.as_ref().as_os_str()), None)],
-    }
+pub fn walk<P: AsRef<Path>>(path: P) -> Walk {
+    Walk::new(path.as_ref().as_os_str().to_owned(), false)
 }
