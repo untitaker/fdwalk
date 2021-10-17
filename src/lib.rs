@@ -1,7 +1,7 @@
 use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::{openat, OFlag};
-use nix::sys::stat::Mode;
+use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::sys::stat::{Mode, fstatat, FileStat};
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::File;
 use std::mem::ManuallyDrop;
@@ -10,25 +10,10 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-pub struct PathNode(Arc<PathNodeInner>);
-
 #[derive(Debug)]
 struct PathNodeInner {
-    parent: Option<PathNode>,
+    parent: Option<WithPath>,
     segment: OsString,
-}
-
-impl PathNode {
-    pub fn to_path(&self) -> PathBuf {
-        let mut rv = PathBuf::new();
-        if let Some(ref parent) = self.0.parent {
-            rv.push(parent.to_path());
-        }
-
-        rv.push(OsStr::from_bytes(self.0.segment.as_bytes()));
-        rv
-    }
 }
 
 pub trait Node {
@@ -37,50 +22,104 @@ pub trait Node {
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self;
 }
 
-impl Node for PathNode {
-    fn root(segment: &OsStr) -> PathNode {
-        PathNode(Arc::new(PathNodeInner {
-            parent: None,
-            segment: segment.to_owned(),
-        }))
-    }
+pub trait DirSink {
+    fn dir_sink(dir: Arc<Dir>) -> Self;
+}
 
-    fn segment(&self) -> &OsStr {
-        &self.0.segment
-    }
+pub struct WithOpen(Arc<Dir>);
 
-    fn new_child(&self, _parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
-        PathNode(Arc::new(PathNodeInner {
-            parent: Some(self.clone()),
-            segment: segment.to_owned(),
+impl DirSink for WithOpen {
+    fn dir_sink(dir: Arc<Dir>) -> Self {
+        WithOpen(dir)
+    }
+}
+
+pub struct WithoutOpen;
+
+impl DirSink for WithoutOpen {
+    fn dir_sink(_dir: Arc<Dir>) -> Self {
+        WithoutOpen
+    }
+}
+
+pub trait PathSink: Sized {
+    fn path_sink(base: &Self, segment: &OsStr) -> Self;
+}
+
+#[derive(Debug, Clone)]
+pub struct WithPath(Arc<PathNodeInner>);
+
+impl PathSink for WithPath {
+    fn path_sink(base: &Self, segment: &OsStr) -> Self {
+        WithPath(Arc::new(PathNodeInner {
+            parent: Some(base.clone()),
+            segment: segment.to_owned()
         }))
     }
 }
 
-pub struct FileNode {
-    parent_dir: Option<Arc<Dir>>,
+pub struct WithoutPath;
+
+impl PathSink for WithoutPath {
+    fn path_sink(_base: &Self, _segment: &OsStr) -> Self {
+        WithoutPath
+    }
+}
+
+pub struct FileNode<D = WithOpen, P = WithPath> {
+    parent_node: Option<P>,
+    parent_dir: Option<D>,
     segment: OsString,
 }
 
-impl FileNode {
-    pub fn open(&self) -> Option<Result<File, Errno>> {
+impl<P: PathSink> FileNode<WithOpen, P> {
+    pub fn stat(&self) -> Result<FileStat, Errno> {
+        fstatat(self.parent_dir.as_ref().unwrap().0.as_raw_fd(), self.segment.as_os_str(), AtFlags::empty())
+    }
+
+    pub fn open(&self) -> Result<File, Errno> {
         self.open_options(OFlag::empty(), Mode::empty())
     }
 
-    pub fn open_options(&self, oflag: OFlag, mode: Mode) -> Option<Result<File, Errno>> {
+    pub fn open_options(&self, oflag: OFlag, mode: Mode) -> Result<File, Errno> {
         let fd = openat(
-            self.parent_dir.as_ref()?.as_raw_fd(),
+            self.parent_dir.as_ref().unwrap().0.as_raw_fd(),
             self.segment.as_os_str(),
             oflag,
             mode,
         );
-        Some(fd.map(|x| unsafe { File::from_raw_fd(x) }))
+        fd.map(|x| unsafe { File::from_raw_fd(x) })
     }
 }
 
-impl Node for FileNode {
+impl<D: DirSink> FileNode<D, WithPath> {
+    pub fn to_path(&self) -> PathBuf {
+        // XXX: slow
+        let mut segments = vec![
+            &self.segment
+        ];
+
+        let mut current_opt: Option<&WithPath> = self.parent_node.as_ref();
+
+        while let Some(ref mut current) = current_opt {
+            segments.push(&current.0.segment);
+            current_opt = current.0.parent.as_ref();
+        }
+
+        let mut rv = PathBuf::new();
+
+        for segment in segments.into_iter().rev() {
+            rv.push(segment);
+        }
+
+        rv
+    }
+}
+
+impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
     fn root(segment: &OsStr) -> Self {
         FileNode {
+            parent_node: None,
             parent_dir: None,
             segment: segment.to_owned(),
         }
@@ -90,13 +129,14 @@ impl Node for FileNode {
     }
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
         FileNode {
-            parent_dir: Some(parent_dir.clone()),
+            parent_dir: Some(D::dir_sink(parent_dir.clone())),
+            parent_node: self.parent_node.as_ref().map(|p| P::path_sink(p, segment)),
             segment: segment.to_owned(),
         }
     }
 }
 
-pub struct Walk<N> {
+pub struct Walk<N = FileNode> {
     walk_stack: Vec<(N, Option<Arc<Dir>>)>,
 }
 
