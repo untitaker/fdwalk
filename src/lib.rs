@@ -153,11 +153,11 @@ impl<N: Node> Iterator for Walk<N> {
                 Dir::openat(
                     parent_dir.as_raw_fd(),
                     node.segment(),
-                    OFlag::empty(),
+                    OFlag::O_NOFOLLOW,
                     Mode::empty(),
                 )
             } else {
-                Dir::open(node.segment(), OFlag::empty(), Mode::empty())
+                Dir::open(node.segment(), OFlag::O_NOFOLLOW, Mode::empty())
             };
 
             let dir = match dir {
@@ -166,6 +166,7 @@ impl<N: Node> Iterator for Walk<N> {
                     return Some(Ok(node));
                 }
                 Err(Errno::ENOENT) => continue,
+                Err(Errno::ELOOP) => continue,
                 Err(e) => return Some(Err(e)),
             };
 
