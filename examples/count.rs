@@ -2,7 +2,8 @@ use fdwalk::FileNode;
 
 fn main() {
     let mut i = 0;
-    for _ in fdwalk::walk::<_, FileNode>(".") {
+    for fd in fdwalk::walk::<_, FileNode>(".") {
+        let _ = fd.unwrap();
         i += 1;
     }
 

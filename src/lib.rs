@@ -97,32 +97,14 @@ impl Node for FileNode {
 }
 
 pub struct Walk<N> {
-    open_dir: Option<(N, Arc<Dir>, ManuallyDrop<nix::dir::OwningIter>)>,
     walk_stack: Vec<(N, Option<Arc<Dir>>)>,
 }
 
 impl<N: Node> Iterator for Walk<N> {
-    type Item = N;
+    type Item = Result<N, Errno>;
 
-    fn next(&mut self) -> Option<N> {
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some((ref open_node, ref open_dir, ref mut open_dir_iter)) = self.open_dir {
-                if let Some(entry) = open_dir_iter.next() {
-                    let entry = entry.unwrap();
-                    let fname = entry.file_name();
-                    if fname == unsafe { CStr::from_bytes_with_nul_unchecked(b".\0") }
-                        || fname == unsafe { CStr::from_bytes_with_nul_unchecked(b"..\0") }
-                    {
-                        continue;
-                    }
-
-                    let child = open_node.new_child(&open_dir, OsStr::from_bytes(fname.to_bytes()));
-                    self.walk_stack.push((child, Some(Arc::clone(&open_dir))));
-                } else {
-                    self.open_dir = None;
-                }
-            }
-
             let (node, parent_dir) = self.walk_stack.pop()?;
 
             let dir = if let Some(parent_dir) = parent_dir {
@@ -139,22 +121,35 @@ impl<N: Node> Iterator for Walk<N> {
             let dir = match dir {
                 Ok(x) => Arc::new(x),
                 Err(Errno::ENOTDIR) => {
-                    return Some(node);
+                    return Some(Ok(node));
                 }
                 Err(Errno::ENOENT) => continue,
-                Err(e) => panic!("failed to open {:?}: {}", node.segment(), e),
+                Err(e) => return Some(Err(e)),
             };
 
-            let dir_iter = ManuallyDrop::new(Dir::from_fd(dir.as_raw_fd()).unwrap().into_iter());
+            let mut dir_iter = ManuallyDrop::new(Dir::from_fd(dir.as_raw_fd()).unwrap().into_iter());
 
-            self.open_dir = Some((node, dir, dir_iter));
+            for entry in &mut *dir_iter {
+                let entry = match entry {
+                    Ok(x) => x,
+                    Err(e) => return Some(Err(e)),
+                };
+                let fname = entry.file_name();
+                if fname == unsafe { CStr::from_bytes_with_nul_unchecked(b".\0") }
+                    || fname == unsafe { CStr::from_bytes_with_nul_unchecked(b"..\0") }
+                {
+                    continue;
+                }
+
+                let child = node.new_child(&dir, OsStr::from_bytes(fname.to_bytes()));
+                self.walk_stack.push((child, Some(Arc::clone(&dir))));
+            }
         }
     }
 }
 
 pub fn walk<P: AsRef<Path>, N: Node>(path: P) -> Walk<N> {
     Walk {
-        open_dir: None,
-        walk_stack: vec![(N::root(path.as_ref().as_os_str()), None::<Arc<Dir>>)],
+        walk_stack: vec![(N::root(path.as_ref().as_os_str()), None)],
     }
 }
