@@ -1,7 +1,7 @@
 use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::{AtFlags, OFlag, openat};
-use nix::sys::stat::{Mode, fstatat, FileStat};
+use nix::fcntl::{openat, AtFlags, OFlag};
+use nix::sys::stat::{fstatat, FileStat, Mode};
 use std::ffi::{CStr, OsStr, OsString};
 use std::fs::File;
 use std::mem::ManuallyDrop;
@@ -53,7 +53,7 @@ impl PathSink for WithPath {
     fn path_sink(base: &Self, segment: &OsStr) -> Self {
         WithPath(Arc::new(PathNodeInner {
             parent: Some(base.clone()),
-            segment: segment.to_owned()
+            segment: segment.to_owned(),
         }))
     }
 }
@@ -74,7 +74,11 @@ pub struct FileNode<D = WithOpen, P = WithPath> {
 
 impl<P: PathSink> FileNode<WithOpen, P> {
     pub fn stat(&self) -> Result<FileStat, Errno> {
-        fstatat(self.parent_dir.as_ref().unwrap().0.as_raw_fd(), self.segment.as_os_str(), AtFlags::empty())
+        fstatat(
+            self.parent_dir.as_ref().unwrap().0.as_raw_fd(),
+            self.segment.as_os_str(),
+            AtFlags::empty(),
+        )
     }
 
     pub fn open(&self) -> Result<File, Errno> {
@@ -95,9 +99,7 @@ impl<P: PathSink> FileNode<WithOpen, P> {
 impl<D: DirSink> FileNode<D, WithPath> {
     pub fn to_path(&self) -> PathBuf {
         // XXX: slow
-        let mut segments = vec![
-            &self.segment
-        ];
+        let mut segments = vec![&self.segment];
 
         let mut current_opt: Option<&WithPath> = self.parent_node.as_ref();
 
