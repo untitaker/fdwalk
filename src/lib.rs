@@ -121,7 +121,7 @@ impl<D: DirSink> FileNode<D, WithPath> {
 impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
     fn root(segment: &OsStr) -> Self {
         FileNode {
-            parent_node: None,
+            parent_node: Some(P::path_sink(None, segment)),
             parent_dir: None,
             segment: segment.to_owned(),
         }
@@ -242,6 +242,8 @@ impl<N: Node> Iterator for Walk<N> {
         }
     }
 }
+
+unsafe impl<N: Node> Send for Walk<N> {}
 
 pub fn walk<P: AsRef<Path>>(path: P) -> Walk {
     Walk::new(path.as_ref().as_os_str().to_owned(), false)
