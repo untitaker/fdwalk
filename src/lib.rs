@@ -2,7 +2,7 @@ use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{openat, AtFlags, OFlag};
 use nix::sys::stat::{fstatat, FileStat, Mode};
-use std::ffi::{CStr, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::mem::ManuallyDrop;
 use std::os::unix::ffi::OsStrExt;
@@ -232,9 +232,7 @@ impl<N: Node> Iterator for Walk<N> {
                     Err(e) => return Some(Err(e)),
                 };
                 let fname = entry.file_name();
-                if fname == unsafe { CStr::from_bytes_with_nul_unchecked(b".\0") }
-                    || fname == unsafe { CStr::from_bytes_with_nul_unchecked(b"..\0") }
-                {
+                if fname.to_bytes() == b"." || fname.to_bytes() == b".." {
                     continue;
                 }
 
