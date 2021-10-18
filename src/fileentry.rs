@@ -1,14 +1,14 @@
 //! TODO
 
+use nix::dir::Dir;
+use nix::errno::Errno;
 use nix::fcntl::{openat, AtFlags, OFlag};
 use nix::sys::stat::{fstatat, FileStat, Mode};
-use std::sync::Arc;
-use nix::dir::Dir;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::ffi::{OsStr, OsString};
-use nix::errno::Errno;
-use std::path::{PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::Entry;
 

@@ -2,19 +2,18 @@
 //! TODO
 pub mod fileentry;
 
-use fileentry::{WithOpen, WithoutOpen, WithPath, WithoutPath, FileEntry, DirSink, PathSink};
+use fileentry::{DirSink, FileEntry, PathSink, WithOpen, WithPath, WithoutOpen, WithoutPath};
 
 use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::{OFlag};
-use nix::sys::stat::{Mode};
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use std::ffi::{OsStr, OsString};
 use std::mem::ManuallyDrop;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd};
-use std::path::{Path};
+use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::sync::Arc;
-
 
 /// A directory entry. You can potentially swap out the entire struct used to represent directory
 /// entries for your own instead of using `FileEntry`, and customize every aspect of what data is
@@ -30,7 +29,6 @@ pub trait Entry {
     /// Create a child entry based on current one.
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self;
 }
-
 
 /// The iterator returned from `walk`. Use its methods to configure directory walking.
 pub struct Walk<N: Entry = FileEntry> {
