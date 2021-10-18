@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{openat, AtFlags, OFlag};
@@ -11,29 +13,41 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug)]
-struct PathNodeInner {
+struct PathEntryInner {
     parent: Option<WithPath>,
     segment: OsString,
 }
 
-pub trait Node {
+pub trait Entry {
+    /// Construct a new "root" entry. This is called with potentially an entire directory path,
+    /// i.e. whatever `walk` was called with.
     fn root(segment: &OsStr) -> Self;
+
+    /// Get the current path segment.
     fn segment(&self) -> &OsStr;
+
+    /// Create a child entry based on current one.
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self;
 }
 
 pub trait DirSink {
+    /// Store the parent directory in a new instance (or don't...)
     fn dir_sink(dir: Arc<Dir>) -> Self;
 }
 
+/// A type parameter for `FileEntry` that is used to store parent FD.
 pub struct WithOpen(Arc<Dir>);
 
 impl DirSink for WithOpen {
     fn dir_sink(dir: Arc<Dir>) -> Self {
         WithOpen(dir)
     }
+
+    // TODO: open() and friends should exist here, meaning DirSinks should keep track of basename.
 }
 
+/// A type parameter for `FileEntry` that is used to avoid storing any informationn for opening
+/// files. Using this will avoid keeping file descriptors open.
 pub struct WithoutOpen;
 
 impl DirSink for WithoutOpen {
@@ -42,22 +56,31 @@ impl DirSink for WithoutOpen {
     }
 }
 
+/// A path sink is a type that can be used to keep track of filesystem paths while walking
+/// directories.
 pub trait PathSink: Sized {
+    /// Construct a "child entry" from a given one + a path segment.
     fn path_sink(base: Option<&Self>, segment: &OsStr) -> Self;
 }
 
+/// A type parameter for `FileEntry` that is used to keep track of paths.
+///
+/// Paths are tracked as a linked list constructed of Arcs right now, this may be improved in the
+/// future. You can implement your own way of keeping track of (parts of) file paths by
+/// implementing `PathSink`.
 #[derive(Debug, Clone)]
-pub struct WithPath(Arc<PathNodeInner>);
+pub struct WithPath(Arc<PathEntryInner>);
 
 impl PathSink for WithPath {
     fn path_sink(base: Option<&Self>, segment: &OsStr) -> Self {
-        WithPath(Arc::new(PathNodeInner {
+        WithPath(Arc::new(PathEntryInner {
             parent: base.map(|x| x.clone()),
             segment: segment.to_owned(),
         }))
     }
 }
 
+/// A type parameter for `FileEntry` to avoid storing paths.
 pub struct WithoutPath;
 
 impl PathSink for WithoutPath {
@@ -66,13 +89,16 @@ impl PathSink for WithoutPath {
     }
 }
 
-pub struct FileNode<D = WithoutOpen, P = WithoutPath> {
+/// A value returned by the `Walk` iterator. Represents a file, socket, or anything that is not a
+/// directory.
+pub struct FileEntry<D = WithoutOpen, P = WithoutPath> {
     parent_node: Option<P>,
     parent_dir: Option<D>,
     segment: OsString,
 }
 
-impl<P: PathSink> FileNode<WithOpen, P> {
+impl<P: PathSink> FileEntry<WithOpen, P> {
+    /// call `stat()` for this file.
     pub fn stat(&self) -> Result<FileStat, Errno> {
         fstatat(
             self.parent_dir.as_ref().unwrap().0.as_raw_fd(),
@@ -81,10 +107,12 @@ impl<P: PathSink> FileNode<WithOpen, P> {
         )
     }
 
+    /// Open the file for reading.
     pub fn open(&self) -> Result<File, Errno> {
         self.open_options(OFlag::empty(), Mode::empty())
     }
 
+    /// Open the file with custom flags and open mode.
     pub fn open_options(&self, oflag: OFlag, mode: Mode) -> Result<File, Errno> {
         let fd = openat(
             self.parent_dir.as_ref().unwrap().0.as_raw_fd(),
@@ -96,7 +124,10 @@ impl<P: PathSink> FileNode<WithOpen, P> {
     }
 }
 
-impl<D: DirSink> FileNode<D, WithPath> {
+impl<D: DirSink> FileEntry<D, WithPath> {
+    /// Return the file entry's path from a linked list kept in memory.
+    ///
+    /// This may return paths that exceed the size of paths that can be passed to syscalls.
     pub fn to_path(&self) -> PathBuf {
         // XXX: slow, also self.segment apparently == self.parent_node.segment?
         let mut segments = vec![];
@@ -118,19 +149,21 @@ impl<D: DirSink> FileNode<D, WithPath> {
     }
 }
 
-impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
+impl<D: DirSink, P: PathSink> Entry for FileEntry<D, P> {
     fn root(segment: &OsStr) -> Self {
-        FileNode {
+        FileEntry {
             parent_node: Some(P::path_sink(None, segment)),
             parent_dir: None,
             segment: segment.to_owned(),
         }
     }
+
     fn segment(&self) -> &OsStr {
         &self.segment
     }
+
     fn new_child(&self, parent_dir: &Arc<Dir>, segment: &OsStr) -> Self {
-        FileNode {
+        FileEntry {
             parent_dir: Some(D::dir_sink(parent_dir.clone())),
             parent_node: Some(P::path_sink(self.parent_node.as_ref(), segment)),
             segment: segment.to_owned(),
@@ -138,13 +171,14 @@ impl<D: DirSink, P: PathSink> Node for FileNode<D, P> {
     }
 }
 
-pub struct Walk<N: Node = FileNode> {
+/// The iterator returned from `walk`. Use its methods to configure directory walking.
+pub struct Walk<N: Entry = FileEntry> {
     path: OsString,
     follow_symlinks: bool,
     walk_stack: Vec<(N, Option<Arc<Dir>>)>,
 }
 
-impl<N: Node> Walk<N> {
+impl<N: Entry> Walk<N> {
     fn new(path: OsString, follow_symlinks: bool) -> Self {
         let walk_stack = vec![(N::root(&path), None)];
 
@@ -155,40 +189,54 @@ impl<N: Node> Walk<N> {
         }
     }
 
-    pub fn with_node<N2: Node>(self) -> Walk<N2> {
+    fn with_node<N2: Entry>(self) -> Walk<N2> {
         Walk::new(self.path, self.follow_symlinks)
     }
 
+    /// Follow symlinks.
+    ///
+    /// This may lead across filesystem boundaries and outside of the specified directory tree.
     pub fn follow_symlinks(mut self) -> Self {
         self.follow_symlinks = true;
         self
     }
 
+    /// Do not follow symlinks (default).
     pub fn no_follow_symlinks(mut self) -> Self {
         self.follow_symlinks = false;
         self
     }
 }
 
-impl<D: DirSink, P: PathSink> Walk<FileNode<D, P>> {
-    pub fn with_paths(self) -> Walk<FileNode<D, WithPath>> {
+impl<D: DirSink, P: PathSink> Walk<FileEntry<D, P>> {
+    /// Enable ability to get the path of the currrent file entry.
+    ///
+    /// This increases memory usage as now paths need to be kept in memory.
+    pub fn with_paths(self) -> Walk<FileEntry<D, WithPath>> {
         self.with_node()
     }
 
-    pub fn without_paths(self) -> Walk<FileNode<D, WithoutPath>> {
+    /// Disables ability to get the path of the current file entry (default).
+    pub fn without_paths(self) -> Walk<FileEntry<D, WithoutPath>> {
         self.with_node()
     }
 
-    pub fn with_open(self) -> Walk<FileNode<WithOpen, P>> {
+    /// Enable ability to open file directly from entry.
+    ///
+    /// This makes `open` and `open_options` available.
+    pub fn with_open(self) -> Walk<FileEntry<WithOpen, P>> {
         self.with_node()
     }
 
-    pub fn without_open(self) -> Walk<FileNode<WithoutOpen, P>> {
+    /// Disables ability to open file from entry (default).
+    ///
+    /// With neither paths nor open enabled, a file entry can only be used to count files.
+    pub fn without_open(self) -> Walk<FileEntry<WithoutOpen, P>> {
         self.with_node()
     }
 }
 
-impl<N: Node> Iterator for Walk<N> {
+impl<N: Entry> Iterator for Walk<N> {
     type Item = Result<N, Errno>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -243,8 +291,18 @@ impl<N: Node> Iterator for Walk<N> {
     }
 }
 
-unsafe impl<N: Node> Send for Walk<N> {}
+unsafe impl<N: Entry> Send for Walk<N> {}
 
+/// Start recursively walking the directory given at `path`.
+///
+/// To configure the directory walker, use the methods on the return value:
+///
+///
+/// ```rust
+/// for entry in walk(".").with_paths().follow_symlinks() {
+///     println!("{}", entry.to_path().display());
+/// }
+/// ```
 pub fn walk<P: AsRef<Path>>(path: P) -> Walk {
     Walk::new(path.as_ref().as_os_str().to_owned(), false)
 }
