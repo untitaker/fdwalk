@@ -2,7 +2,7 @@
 //! TODO
 pub mod fileentry;
 
-use fileentry::{DirSink, FileEntry, PathSink, WithOpen, WithPath, WithoutOpen, WithoutPath};
+use fileentry::{OpenProvider, FileEntry, PathProvider, WithOpen, WithPath, WithoutOpen, WithoutPath};
 
 use nix::dir::Dir;
 use nix::errno::Errno;
@@ -67,7 +67,7 @@ impl<N: Entry> Walk<N> {
     }
 }
 
-impl<D: DirSink, P: PathSink> Walk<FileEntry<D, P>> {
+impl<D: OpenProvider, P: PathProvider> Walk<FileEntry<D, P>> {
     /// Enable ability to get the path of the currrent file entry.
     ///
     /// This increases memory usage as now paths need to be kept in memory.
